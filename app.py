@@ -30,10 +30,15 @@ class PrototypicalNetwork(nn.Module):
         return F.normalize(embedding, p=2, dim=1)
 
 # ----- Load Model and Prototypes -----
-model = PrototypicalNetwork(embedding_dim=128)
-state_dict = torch.load("model_state.pth", map_location=torch.device("cpu"), weights_only=True)
-model.load_state_dict(state_dict)
-class_prototypes = torch.load("class_prototypes.pth", map_location=torch.device("cpu"))
+try:
+    model = PrototypicalNetwork(embedding_dim=128)
+    state_dict = torch.load("model_state.pth", map_location=torch.device("cpu"), weights_only=True)
+    model.load_state_dict(state_dict)
+    model.eval()  # Set to evaluation mode
+    class_prototypes = torch.load("class_prototypes.pth", map_location=torch.device("cpu"))
+except Exception as e:
+    st.error(f"Failed to load model or prototypes: {str(e)}")
+    raise
 
 # ----- Image Preprocessing Transform -----
 transform = transforms.Compose([
@@ -60,7 +65,6 @@ threshold = 0.35
 def predict_image(img):
     try:
         img_tensor = transform(img).unsqueeze(0)
-        model.eval()
         with torch.no_grad():
             embedding = model(img_tensor)
         distances = {cls: torch.norm(embedding - proto.to(embedding.device).unsqueeze(0)).item() 
@@ -81,22 +85,3 @@ async def predict(file: UploadFile):
     try:
         contents = await file.read()
         img = Image.open(io.BytesIO(contents))
-        prediction = predict_image(img)
-        return {"prediction": prediction}
-    except Exception as e:
-        return {"error": str(e)}
-
-# ----- Streamlit UI -----
-st.title("Fas7ni Detector")
-st.write("Upload an image to identify the tourism site.")
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg"])
-if uploaded_file is not None:
-    img = Image.open(uploaded_file)
-    st.image(img, caption="Uploaded Image", use_column_width=True)
-    st.write("Classifying...")
-    prediction = predict_image(img)
-    st.write(f"Name of site is: {prediction}")
-
-# Mount FastAPI app (runs on same port as Streamlit)
-app = st.server.server.app
-app.mount("/api", WSGIMiddleware(fastapi_app))
