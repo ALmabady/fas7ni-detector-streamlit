@@ -4,6 +4,9 @@ import streamlit as st
 # Import FastAPI and related modules for the API
 from fastapi import FastAPI, UploadFile, Body
 
+# Import FastAPI middleware to integrate with Streamlit
+from fastapi.middleware.wsgi import WSGIMiddleware
+
 # Import PIL for image processing
 from PIL import Image
 
@@ -24,11 +27,12 @@ import torch.nn.functional as F
 # Import base64 for decoding base64-encoded images
 import base64
 
-# Import uvicorn to run the FastAPI server
+# Import uvicorn to run the combined server
 import uvicorn
 
-# Import Thread to run FastAPI in the background
-from threading import Thread
+# Import Starlette for mounting routes
+from starlette.applications import Starlette
+from starlette.routing import Mount, Route
 
 # Define the PrototypicalNetwork class for the model
 class PrototypicalNetwork(nn.Module):
@@ -164,31 +168,35 @@ async def predict_base64(data: dict = Body(...)):
         # Return JSON error response with 400 status
         return {"prediction": f"Error: {str(e)}"}, 400
 
-# Function to run FastAPI in a background thread
-def run_fastapi():
-    # Run FastAPI on port 8000 with minimal logging
-    uvicorn.run(fastapi_app, host="0.0.0.0", port=8000, log_level="error")
+# Define a simple Streamlit WSGI app
+def streamlit_app(environ, start_response):
+    # Run the Streamlit app
+    st.title("Fas7ni Detector")
+    st.write("Upload an image to identify the tourism site.")
+    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg"])
+    if uploaded_file is not None:
+        try:
+            img = Image.open(uploaded_file).convert("RGB")
+            st.image(img, caption="Uploaded Image", use_column_width=True)
+            st.write("Classifying...")
+            prediction = predict_image(img)
+            st.write(f"Name of site is: {prediction}")
+        except Exception as e:
+            st.error(f"Error processing image: {str(e)}")
+    # Return a dummy response (Streamlit handles rendering)
+    status = '200 OK'
+    headers = [('Content-type', 'text/html')]
+    start_response(status, headers)
+    return [b"Streamlit app"]
 
-# Start the FastAPI server in a daemon thread
-fastapi_thread = Thread(target=run_fastapi, daemon=True)
-fastapi_thread.start()
+# Create a Starlette app to mount FastAPI and Streamlit
+app = Starlette(routes=[
+    # Mount FastAPI at /api
+    Mount("/api", app=fastapi_app),
+    # Mount Streamlit at /
+    Mount("/", app=WSGIMiddleware(streamlit_app))
+])
 
-# Streamlit UI
-st.title("Fas7ni Detector")
-st.write("Upload an image to identify the tourism site.")
-# Create a file uploader for images
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg"])
-if uploaded_file is not None:
-    try:
-        # Open the uploaded image and convert to RGB
-        img = Image.open(uploaded_file).convert("RGB")
-        # Display the image in the UI
-        st.image(img, caption="Uploaded Image", use_column_width=True)
-        st.write("Classifying...")
-        # Get the prediction
-        prediction = predict_image(img)
-        # Display the prediction
-        st.write(f"Name of site is: {prediction}")
-    except Exception as e:
-        # Display error in the UI
-        st.error(f"Error processing image: {str(e)}")
+# Run the combined app with uvicorn if executed directly
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8501, log_level="error")
