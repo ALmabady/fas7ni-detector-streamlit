@@ -1,7 +1,4 @@
 import streamlit as st
-from streamlit.runtime.scriptrunner import get_script_run_ctx
-from streamlit.runtime.http import ExperimentalHttpHandler, experimental_http
-
 from PIL import Image
 import torch
 import torch.nn as nn
@@ -11,6 +8,19 @@ import timm
 import base64
 import io
 import json
+import logging
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+import uvicorn
+import threading
+import nest_asyncio
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Apply nest_asyncio to allow FastAPI to run within Streamlit
+nest_asyncio.apply()
 
 # ------------------- Model Definition -------------------
 
@@ -34,10 +44,15 @@ class PrototypicalNetwork(nn.Module):
 
 # ------------------- Load Model & Prototypes -------------------
 
-model = PrototypicalNetwork(embedding_dim=128)
-model.load_state_dict(torch.load("model_state.pth", map_location="cpu"), strict=False)
-model.eval()
-class_prototypes = torch.load("class_prototypes.pth", map_location="cpu")
+try:
+    model = PrototypicalNetwork(embedding_dim=128)
+    model.load_state_dict(torch.load("model_state.pth", map_location="cpu"), strict=False)
+    model.eval()
+    class_prototypes = torch.load("class_prototypes.pth", map_location="cpu")
+except Exception as e:
+    logger.error(f"Error loading model or prototypes: {str(e)}")
+    st.error("Failed to load model. Please check the model files.")
+    raise e
 
 # ------------------- Config -------------------
 
@@ -63,33 +78,49 @@ transform = transforms.Compose([
 # ------------------- Prediction Logic -------------------
 
 def predict_image(img):
-    img_tensor = transform(img).unsqueeze(0)
-    with torch.no_grad():
-        embedding = model(img_tensor)
-    distances = {
-        cls: torch.norm(embedding - proto.to(embedding.device).unsqueeze(0)).item()
-        for cls, proto in class_prototypes.items()
-    }
-    pred_class = min(distances, key=distances.get)
-    min_distance = distances[pred_class]
-    if min_distance > threshold:
-        return "unknown"
-    return class_names[pred_class]
+    try:
+        img_tensor = transform(img).unsqueeze(0)
+        with torch.no_grad():
+            embedding = model(img_tensor)
+        distances = {
+            cls: torch.norm(embedding - proto.to(embedding.device).unsqueeze(0)).item()
+            for cls, proto in class_prototypes.items()
+        }
+        pred_class = min(distances, key=distances.get)
+        min_distance = distances[pred_class]
+        if min_distance > threshold:
+            return "unknown"
+        return class_names[pred_class]
+    except Exception as e:
+        logger.error(f"Prediction error: {str(e)}")
+        raise e
 
-# ------------------- Expose API Using experimental_http -------------------
+# ------------------- FastAPI Setup -------------------
 
-@experimental_http("/predict_base64")
-class PredictBase64API(ExperimentalHttpHandler):
-    def post(self, request):
-        try:
-            body = json.loads(request.body)
-            image_b64 = body["image"]
-            image_data = base64.b64decode(image_b64)
-            image = Image.open(io.BytesIO(image_data)).convert("RGB")
-            prediction = predict_image(image)
-            return self.json({"prediction": prediction})
-        except Exception as e:
-            return self.json({"error": str(e)}, status=500)
+app = FastAPI(title="Fas7ni Detector API")
+
+class ImageRequest(BaseModel):
+    image: str
+
+@app.post("/predict_base64")
+async def predict_base64(request: ImageRequest):
+    try:
+        image_b64 = request.image
+        image_data = base64.b64decode(image_b64)
+        image = Image.open(io.BytesIO(image_data)).convert("RGB")
+        prediction = predict_image(image)
+        return {"prediction": prediction}
+    except Exception as e:
+        logger.error(f"API error: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ------------------- Run FastAPI in a separate thread -------------------
+
+def run_fastapi():
+    uvicorn.run(app, host="0.0.0.0", port=8501, log_level="info")
+
+fastapi_thread = threading.Thread(target=run_fastapi, daemon=True)
+fastapi_thread.start()
 
 # ------------------- Streamlit UI -------------------
 
@@ -99,8 +130,12 @@ st.write("Upload an image to classify the tourism site.")
 
 uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg"])
 if uploaded_file:
-    img = Image.open(uploaded_file).convert("RGB")
-    st.image(img, caption="Uploaded Image", use_column_width=True)
-    st.write("🔍 Classifying...")
-    prediction = predict_image(img)
-    st.success(f"✅ Predicted Site: **{prediction}**")
+    try:
+        img = Image.open(uploaded_file).convert("RGB")
+        st.image(img, caption="Uploaded Image", use_column_width=True)
+        st.write("🔍 Classifying...")
+        prediction = predict_image(img)
+        st.success(f"✅ Predicted Site: **{prediction}**")
+    except Exception as e:
+        st.error(f"Error processing image: {str(e)}")
+        logger.error(f"Streamlit UI error: {str(e)}")
