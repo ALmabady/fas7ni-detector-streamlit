@@ -1,6 +1,7 @@
 import streamlit as st
 from fastapi import FastAPI, UploadFile, Body
 from fastapi.middleware.wsgi import WSGIMiddleware
+from fastapi.responses import PlainTextResponse
 from PIL import Image
 import io
 import torch
@@ -11,7 +12,6 @@ import torch.nn.functional as F
 import base64
 from starlette.applications import Starlette
 from starlette.routing import Mount
-from streamlit.web.server import Server
 
 # ----- Model Architecture -----
 class PrototypicalNetwork(nn.Module):
@@ -90,9 +90,9 @@ async def predict(file: UploadFile):
         contents = await file.read()
         img = Image.open(io.BytesIO(contents)).convert("RGB")
         prediction = predict_image(img)
-        return {"prediction": prediction}
+        return PlainTextResponse(prediction)
     except Exception as e:
-        return {"error": str(e)}
+        return PlainTextResponse(f"Error: {str(e)}", status_code=400)
 
 @fastapi_app.post("/predict_base64")
 async def predict_base64(data: dict = Body(...)):
@@ -101,9 +101,9 @@ async def predict_base64(data: dict = Body(...)):
         img_data = base64.b64decode(base64_string)
         img = Image.open(io.BytesIO(img_data)).convert("RGB")
         prediction = predict_image(img)
-        return {"prediction": prediction}
+        return PlainTextResponse(prediction)
     except Exception as e:
-        return {"error": str(e)} 
+        return PlainTextResponse(f"Error: {str(e)}", status_code=400)
 
 # ----- Streamlit UI -----
 def streamlit_app():
@@ -114,7 +114,6 @@ def streamlit_app():
         try:
             img = Image.open(uploaded_file).convert("RGB")
             st.image(img, caption="Uploaded Image", use_column_width=True)
-            st.write("Classifying...")
             prediction = predict_image(img)
             st.write(f"Name of site is: {prediction}")
         except Exception as e:
