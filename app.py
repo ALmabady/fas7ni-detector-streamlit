@@ -32,14 +32,14 @@ import uvicorn
 
 # Import Starlette for mounting routes
 from starlette.applications import Starlette
-from starlette.routing import Mount, Route
+from starlette.routing import Mount
 
 # Define the PrototypicalNetwork class for the model
 class PrototypicalNetwork(nn.Module):
     def __init__(self, embedding_dim=128):
         super(PrototypicalNetwork, self).__init__()
-        # Use DeiT-small as the backbone
-        self.backbone = timm.create_model('deit_small_patch16_224', pretrained=True)
+        # Use DeiT-small without pretrained weights
+        self.backbone = timm.create_model('deit_small_patch16_224', pretrained=False)
         # Freeze backbone parameters to prevent training
         for param in self.backbone.parameters():
             param.requires_grad = False
@@ -66,13 +66,13 @@ class PrototypicalNetwork(nn.Module):
 try:
     # Initialize the model with 128-dimensional embeddings
     model = PrototypicalNetwork(embedding_dim=128)
-    # Load the model state dictionary (CPU-only)
+    # Load the model state dictionary from GitHub repo
     state_dict = torch.load("model_state.pth", map_location=torch.device("cpu"), weights_only=True)
     # Apply the state dictionary to the model
     model.load_state_dict(state_dict)
     # Set the model to evaluation mode
     model.eval()
-    # Load class prototypes
+    # Load class prototypes from GitHub repo
     class_prototypes = torch.load("class_prototypes.pth", map_location=torch.device("cpu"))
 except Exception as e:
     # Display error in Streamlit UI
