@@ -1,5 +1,5 @@
 import streamlit as st
-from fastapi import FastAPI, UploadFile
+from fastapi import FastAPI, UploadFile, Body
 from starlette.middleware.wsgi import WSGIMiddleware
 from PIL import Image
 import io
@@ -8,6 +8,7 @@ from torchvision import transforms
 import timm
 import torch.nn as nn
 import torch.nn.functional as F
+import base64
 
 # ----- Model Architecture -----
 class PrototypicalNetwork(nn.Module):
@@ -84,4 +85,37 @@ fastapi_app = FastAPI()
 async def predict(file: UploadFile):
     try:
         contents = await file.read()
-        img = Image.open(io.BytesIO(contents))
+        img = Image.open(io.BytesIO(contents)).convert("RGB")
+        prediction = predict_image(img)
+        return {"prediction": prediction}
+    except Exception as e:
+        return {"error": str(e)}
+
+@fastapi_app.post("/predict_base64")
+async def predict_base64(data: dict = Body(...)):
+    try:
+        base64_string = data["image"]
+        img_data = base64.b64decode(base64_string)
+        img = Image.open(io.BytesIO(img_data)).convert("RGB")
+        prediction = predict_image(img)
+        return {"prediction": prediction}
+    except Exception as e:
+        return {"error": str(e)}
+
+# ----- Streamlit UI -----
+st.title("Fas7ni Detector")
+st.write("Upload an image to identify the tourism site.")
+uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg"])
+if uploaded_file is not None:
+    try:
+        img = Image.open(uploaded_file).convert("RGB")
+        st.image(img, caption="Uploaded Image", use_column_width=True)
+        st.write("Classifying...")
+        prediction = predict_image(img)
+        st.write(f"Name of site is: {prediction}")
+    except Exception as e:
+        st.error(f"Error processing image: {str(e)}")
+
+# Mount FastAPI app
+app = st.server.server.app
+app.mount("/api", WSGIMiddleware(fastapi_app))
