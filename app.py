@@ -1,6 +1,6 @@
 import streamlit as st
 from fastapi import FastAPI, UploadFile, Body
-from starlette.middleware.wsgi import WSGIMiddleware
+from fastapi.middleware.wsgi import WSGIMiddleware
 from PIL import Image
 import io
 import torch
@@ -9,6 +9,9 @@ import timm
 import torch.nn as nn
 import torch.nn.functional as F
 import base64
+from starlette.applications import Starlette
+from starlette.routing import Mount
+from streamlit.web.server import Server
 
 # ----- Model Architecture -----
 class PrototypicalNetwork(nn.Module):
@@ -35,7 +38,7 @@ try:
     model = PrototypicalNetwork(embedding_dim=128)
     state_dict = torch.load("model_state.pth", map_location=torch.device("cpu"), weights_only=True)
     model.load_state_dict(state_dict)
-    model.eval()  # Set to evaluation mode
+    model.eval()
     class_prototypes = torch.load("class_prototypes.pth", map_location=torch.device("cpu"))
 except Exception as e:
     st.error(f"Failed to load model or prototypes: {str(e)}")
@@ -100,22 +103,29 @@ async def predict_base64(data: dict = Body(...)):
         prediction = predict_image(img)
         return {"prediction": prediction}
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e)} 
 
 # ----- Streamlit UI -----
-st.title("Fas7ni Detector")
-st.write("Upload an image to identify the tourism site.")
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg"])
-if uploaded_file is not None:
-    try:
-        img = Image.open(uploaded_file).convert("RGB")
-        st.image(img, caption="Uploaded Image", use_column_width=True)
-        st.write("Classifying...")
-        prediction = predict_image(img)
-        st.write(f"Name of site is: {prediction}")
-    except Exception as e:
-        st.error(f"Error processing image: {str(e)}")
+def streamlit_app():
+    st.title("Fas7ni Detector")
+    st.write("Upload an image to identify the tourism site.")
+    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg"])
+    if uploaded_file is not None:
+        try:
+            img = Image.open(uploaded_file).convert("RGB")
+            st.image(img, caption="Uploaded Image", use_column_width=True)
+            st.write("Classifying...")
+            prediction = predict_image(img)
+            st.write(f"Name of site is: {prediction}")
+        except Exception as e:
+            st.error(f"Error processing image: {str(e)}")
 
-# Mount FastAPI app
-app = st.server.server.app
-app.mount("/api", WSGIMiddleware(fastapi_app))
+# ----- Combine FastAPI and Streamlit -----
+app = Starlette(routes=[
+    Mount("/api", app=fastapi_app),
+    Mount("/", app=WSGIMiddleware(st.web.cli_main))
+])
+
+# Run Streamlit in the main app
+if __name__ == "__main__":
+    streamlit_app()
