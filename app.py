@@ -1,16 +1,16 @@
 import streamlit as st
-from fastapi import FastAPI, UploadFile, Body
-from threading import Thread
-import uvicorn
+from streamlit.runtime.scriptrunner import get_script_run_ctx
+from streamlit.runtime.http import ExperimentalHttpHandler, experimental_http
 
 from PIL import Image
-import io
-import base64
 import torch
-from torchvision import transforms
 import torch.nn as nn
 import torch.nn.functional as F
+from torchvision import transforms
 import timm
+import base64
+import io
+import json
 
 # ------------------- Model Definition -------------------
 
@@ -20,12 +20,11 @@ class PrototypicalNetwork(nn.Module):
         self.backbone = timm.create_model('deit_small_patch16_224', pretrained=True)
         for param in self.backbone.parameters():
             param.requires_grad = False
-        if hasattr(self.backbone, 'blocks'):
-            for block in self.backbone.blocks[-2:]:
-                for param in block.parameters():
-                    param.requires_grad = True
+        for block in self.backbone.blocks[-2:]:
+            for param in block.parameters():
+                param.requires_grad = True
         self.embedding_layer = nn.Linear(self.backbone.embed_dim, embedding_dim)
-    
+
     def forward(self, x):
         features = self.backbone.forward_features(x)
         if features.ndim == 3:
@@ -33,17 +32,12 @@ class PrototypicalNetwork(nn.Module):
         embedding = self.embedding_layer(features)
         return F.normalize(embedding, p=2, dim=1)
 
-# ------------------- Load Model -------------------
+# ------------------- Load Model & Prototypes -------------------
 
-try:
-    model = PrototypicalNetwork(embedding_dim=128)
-    state_dict = torch.load("model_state.pth", map_location=torch.device("cpu"), weights_only=True)
-    model.load_state_dict(state_dict)
-    model.eval()
-    class_prototypes = torch.load("class_prototypes.pth", map_location=torch.device("cpu"))
-except Exception as e:
-    st.error(f"Failed to load model or prototypes: {str(e)}")
-    raise
+model = PrototypicalNetwork(embedding_dim=128)
+model.load_state_dict(torch.load("model_state.pth", map_location="cpu"), strict=False)
+model.eval()
+class_prototypes = torch.load("class_prototypes.pth", map_location="cpu")
 
 # ------------------- Config -------------------
 
@@ -69,44 +63,33 @@ transform = transforms.Compose([
 # ------------------- Prediction Logic -------------------
 
 def predict_image(img):
-    try:
-        img_tensor = transform(img).unsqueeze(0)
-        with torch.no_grad():
-            embedding = model(img_tensor)
-        distances = {
-            cls: torch.norm(embedding - proto.to(embedding.device).unsqueeze(0)).item()
-            for cls, proto in class_prototypes.items()
-        }
-        pred_class = min(distances, key=distances.get)
-        min_distance = distances[pred_class]
-        if min_distance > threshold:
-            return "unknown"
-        return class_names[pred_class]
-    except Exception as e:
-        return f"Error: {str(e)}"
+    img_tensor = transform(img).unsqueeze(0)
+    with torch.no_grad():
+        embedding = model(img_tensor)
+    distances = {
+        cls: torch.norm(embedding - proto.to(embedding.device).unsqueeze(0)).item()
+        for cls, proto in class_prototypes.items()
+    }
+    pred_class = min(distances, key=distances.get)
+    min_distance = distances[pred_class]
+    if min_distance > threshold:
+        return "unknown"
+    return class_names[pred_class]
 
-# ------------------- FastAPI Definition -------------------
+# ------------------- Expose API Using experimental_http -------------------
 
-fastapi_app = FastAPI()
-
-@fastapi_app.post("/api/predict_base64")
-async def predict_base64(data: dict = Body(...)):
-    try:
-        base64_string = data["image"]
-        img_data = base64.b64decode(base64_string)
-        img = Image.open(io.BytesIO(img_data)).convert("RGB")
-        prediction = predict_image(img)
-        return {"prediction": prediction}
-    except Exception as e:
-        return {"prediction": f"Error: {str(e)}"}
-
-# ------------------- Background Server -------------------
-
-def run_fastapi():
-    uvicorn.run(fastapi_app, host="0.0.0.0", port=8000, log_level="error")
-
-thread = Thread(target=run_fastapi, daemon=True)
-thread.start()
+@experimental_http("/predict_base64")
+class PredictBase64API(ExperimentalHttpHandler):
+    def post(self, request):
+        try:
+            body = json.loads(request.body)
+            image_b64 = body["image"]
+            image_data = base64.b64decode(image_b64)
+            image = Image.open(io.BytesIO(image_data)).convert("RGB")
+            prediction = predict_image(image)
+            return self.json({"prediction": prediction})
+        except Exception as e:
+            return self.json({"error": str(e)}, status=500)
 
 # ------------------- Streamlit UI -------------------
 
@@ -116,11 +99,8 @@ st.write("Upload an image to classify the tourism site.")
 
 uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg"])
 if uploaded_file:
-    try:
-        img = Image.open(uploaded_file).convert("RGB")
-        st.image(img, caption="Uploaded Image", use_column_width=True)
-        st.write("🔍 Classifying...")
-        prediction = predict_image(img)
-        st.success(f"✅ Predicted Site: **{prediction}**")
-    except Exception as e:
-        st.error(f"Error processing image: {str(e)}")
+    img = Image.open(uploaded_file).convert("RGB")
+    st.image(img, caption="Uploaded Image", use_column_width=True)
+    st.write("🔍 Classifying...")
+    prediction = predict_image(img)
+    st.success(f"✅ Predicted Site: **{prediction}**")
