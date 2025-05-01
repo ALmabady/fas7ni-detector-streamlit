@@ -1,7 +1,7 @@
-streamlit==1.31.1
-torch==2.0.1
-torchvision==0.15.2
-timm==0.9.2
-fastapi==0.103.0
-starlette==0.27.0
-pillow==10.0.0
+streamlit
+torch
+torchvision
+timm
+fastapi
+starlette
+pillow
