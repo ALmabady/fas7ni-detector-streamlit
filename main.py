@@ -1,32 +1,27 @@
-import streamlit as st
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from PIL import Image
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import transforms
-import timm
 import base64
 import io
-import json
 import logging
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import uvicorn
-import threading
-import nest_asyncio
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Apply nest_asyncio to allow FastAPI to run within Streamlit
-nest_asyncio.apply()
+# Initialize FastAPI app
+app = FastAPI(title="Fas7ni Detector API")
 
 # ------------------- Model Definition -------------------
 
 class PrototypicalNetwork(nn.Module):
     def __init__(self, embedding_dim=128):
         super(PrototypicalNetwork, self).__init__()
+        import timm  # Keep timm import inside to prevent issues if not used elsewhere
         self.backbone = timm.create_model('deit_small_patch16_224', pretrained=True)
         for param in self.backbone.parameters():
             param.requires_grad = False
@@ -51,7 +46,6 @@ try:
     class_prototypes = torch.load("class_prototypes.pth", map_location="cpu")
 except Exception as e:
     logger.error(f"Error loading model or prototypes: {str(e)}")
-    st.error("Failed to load model. Please check the model files.")
     raise e
 
 # ------------------- Config -------------------
@@ -95,47 +89,24 @@ def predict_image(img):
         logger.error(f"Prediction error: {str(e)}")
         raise e
 
-# ------------------- FastAPI Setup -------------------
-
-app = FastAPI(title="Fas7ni Detector API")
+# ------------------- Request & Response -------------------
 
 class ImageRequest(BaseModel):
-    image: str
+    image: str  # base64-encoded string
 
-@app.post("/predict_base64")
+class PredictionResponse(BaseModel):
+    prediction: str
+
+# ------------------- FastAPI Route -------------------
+
+@app.post("/predict_base64", response_model=PredictionResponse)
 async def predict_base64(request: ImageRequest):
     try:
         image_b64 = request.image
         image_data = base64.b64decode(image_b64)
         image = Image.open(io.BytesIO(image_data)).convert("RGB")
         prediction = predict_image(image)
-        return {"prediction": prediction}
+        return PredictionResponse(prediction=prediction)
     except Exception as e:
         logger.error(f"API error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
-
-# ------------------- Run FastAPI in a separate thread -------------------
-
-def run_fastapi():
-    uvicorn.run(app, host="0.0.0.0", port=8501, log_level="info")
-
-fastapi_thread = threading.Thread(target=run_fastapi, daemon=True)
-fastapi_thread.start()
-
-# ------------------- Streamlit UI -------------------
-
-st.set_page_config(page_title="Fas7ni Detector", layout="centered")
-st.title("Fas7ni Detector 🏛️")
-st.write("Upload an image to classify the tourism site.")
-
-uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg"])
-if uploaded_file:
-    try:
-        img = Image.open(uploaded_file).convert("RGB")
-        st.image(img, caption="Uploaded Image", use_column_width=True)
-        st.write("🔍 Classifying...")
-        prediction = predict_image(img)
-        st.success(f"✅ Predicted Site: **{prediction}**")
-    except Exception as e:
-        st.error(f"Error processing image: {str(e)}")
-        logger.error(f"Streamlit UI error: {str(e)}")
